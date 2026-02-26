@@ -1,0 +1,51 @@
+# ============================================================
+# Compliance Reasoning Agent - 业务配置
+# 数据源选择、Agent 行为参数等
+# ============================================================
+
+# 数据源配置（工厂模式：系统根据此处配置初始化对应的数据源）
+data_sources:
+  # 专利数据提供商: serpapi | uspto
+  patent_provider: "serpapi"
+  # 趋势数据提供商: pytrends | rainforest | keepa
+  trend_provider: "pytrends"
+
+# LLM 配置
+llm:
+  provider: "openai_compatible"
+  # 温度参数
+  temperature: 0.3
+  # 最大 token
+  max_tokens: 4096
+
+# Agent 配置
+agent:
+  # 最大重写迭代次数 (Node_Review 不通过时的重试上限)
+  max_review_iterations: 3
+  # 专利搜索结果数量上限
+  patent_search_limit: 50
+  # 趋势数据时间范围 (月)
+  trend_timeframe_months: 36
+
+# Memory 配置（双通道：ollama 本地 | mem0_api 云端）
+memory:
+  # 记忆提供商: ollama（本地 Qdrant + Ollama）| mem0_api（Mem0 云端 API）
+  memory_provider: "ollama"
+
+  # --- 本地通道（ollama）配置 ---
+  qdrant_host: "localhost"
+  qdrant_port: 6333
+  ollama_base_url: "http://localhost:11434"
+  ollama_llm_model: "llama3.1:latest"
+  ollama_embed_model: "nomic-embed-text:latest"
+  ollama_embed_dims: 768
+
+  # --- 云端通道（mem0_api）配置 ---
+  # API Key 从 .env 读取: MEM0_API_KEY
+  # 如需指定 user_id 前缀可在此设置
+  mem0_api_user_prefix: ""
+
+  # --- 通用配置 ---
+  short_term_max_length: 500
+  long_term_max_length: 100
+  retention_days: 90
