@@ -1,5 +1,6 @@
 """
 专利矩阵看板 — 竞品专利布局矩阵（竞品 × 技术点）
+数据来源：PostgreSQL patents 表（通过 /api/patents/ 接口）
 """
 import sys
 import os
@@ -12,121 +13,115 @@ from frontend.sidebar import render_sidebar
 
 st.set_page_config(page_title="专利矩阵 | 合规优化智能体", page_icon="📋", layout="wide")
 inject_global_styles()
-render_sidebar()
+api_base = render_sidebar()
 
-page_title("竞品专利布局矩阵", "按申请人 × 技术方向分类的竞争格局全景")
+page_title("竞品专利布局矩阵", "按申请人 × 技术方向分类的竞争格局全景 — 数据实时来自数据库")
 
 
 def render_patent_matrix():
-    """渲染专利矩阵看板"""
+    """渲染专利矩阵看板（真实数据库数据）"""
+    import httpx
 
-    if "latest_result" not in st.session_state:
-        st.info("请先在主页「分析看板」中运行完整分析，结果将在此展示")
-        _render_sample()
+    # ---- 统计卡片 ----
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            stats_resp = client.get(f"{api_base}/api/patents/stats")
+            stats = stats_resp.json() if stats_resp.status_code == 200 else {}
+    except Exception:
+        stats = {}
+
+    if not stats.get("total"):
+        st.info(
+            "📭 数据库中暂无专利数据。请先在「分析看板」主页输入产品关键词并运行分析，"
+            "分析完成后专利数据将自动写入数据库并在此展示。"
+        )
         return
 
-    result = st.session_state.get("latest_result", {})
-    patent_analysis = result.get("patent_analysis", "")
-
-    if patent_analysis:
-        section_header("AI 专利分析报告")
-        with st.container():
-            st.markdown(patent_analysis)
-    else:
-        st.warning("未发现专利分析数据，展示示例数据")
+    # 顶部统计
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("数据库专利总量", stats.get("total", 0))
+    with c2:
+        st.metric("涉及申请人数", len(stats.get("assignees", [])))
+    with c3:
+        st.metric("已分析关键词数", len(stats.get("queries", [])))
 
     st.markdown("<br>", unsafe_allow_html=True)
-    _render_matrix_table(result)
 
-
-def _render_sample():
-    """展示示例矩阵（无分析数据时）"""
-    st.markdown("<br>", unsafe_allow_html=True)
-    section_header("示例数据预览")
-
-    sample = _get_sample_df()
-    st.dataframe(
-        sample,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "风险等级": st.column_config.TextColumn("风险等级", width="small"),
-            "申请日期": st.column_config.TextColumn("申请日期", width="medium"),
-        },
-    )
-
-
-def _render_matrix_table(result: dict):
-    """渲染专利矩阵 + 筛选器 + 统计"""
+    # ---- 筛选器 ----
     section_header("专利布局矩阵")
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
-        filter_assignee = st.text_input(
-            "按申请人筛选", placeholder="输入申请人/公司名称..."
-        )
+        # 查询词下拉（从已有数据中选）
+        query_options = ["全部"] + stats.get("queries", [])
+        selected_query = st.selectbox("按分析关键词筛选", query_options)
     with col2:
-        filter_tech = st.text_input(
-            "按技术方向筛选", placeholder="输入技术方向关键词..."
-        )
+        filter_assignee = st.text_input("按申请人筛选", placeholder="输入公司/申请人名称...")
+    with col3:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        search_btn = st.button("🔍 搜索", type="primary", use_container_width=True)
 
-    df = _get_sample_df()
-
+    # ---- 拉取数据 ----
+    params: dict = {}
+    if selected_query and selected_query != "全部":
+        params["query"] = selected_query
     if filter_assignee:
-        df = df[df["申请人"].str.contains(filter_assignee, case=False, na=False)]
-    if filter_tech:
-        df = df[df["核心技术"].str.contains(filter_tech, case=False, na=False)]
+        params["assignee"] = filter_assignee
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(f"{api_base}/api/patents/", params=params)
+            patents = resp.json() if resp.status_code == 200 else []
+    except Exception as e:
+        st.error(f"获取专利数据失败: {e}")
+        return
+
+    if not patents:
+        st.warning("没有匹配当前筛选条件的专利数据")
+        return
+
+    # ---- 构建 DataFrame ----
+    rows = []
+    for p in patents:
+        tech = ""
+        if isinstance(p.get("tech_points"), dict):
+            tech = "、".join(p["tech_points"].get("points", []))
+        elif isinstance(p.get("tech_points"), list):
+            tech = "、".join(str(x) for x in p["tech_points"][:3])
+
+        rows.append({
+            "专利标题": p.get("title", "—"),
+            "申请人": p.get("assignee") or "未知",
+            "专利号": p.get("patent_id") or "—",
+            "申请日期": p.get("filing_date") or "—",
+            "核心技术": tech or p.get("category") or "—",
+            "数据来源": p.get("source", "—"),
+            "所属查询": p.get("search_query", "—"),
+        })
+
+    df = pd.DataFrame(rows)
 
     st.dataframe(
         df,
         use_container_width=True,
         hide_index=True,
         column_config={
-            "风险等级": st.column_config.TextColumn("风险等级", width="small"),
+            "专利标题": st.column_config.TextColumn("专利标题", width="large"),
+            "申请人": st.column_config.TextColumn("申请人", width="medium"),
+            "数据来源": st.column_config.TextColumn("来源", width="small"),
         },
     )
 
-    # 统计概览
-    st.markdown("<br>", unsafe_allow_html=True)
-    section_header("统计概览")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("专利总量", result.get("patent_count", len(df)))
-    with c2:
-        st.metric("涉及申请人", len(df["申请人"].unique()) if not df.empty else 0)
-    with c3:
-        st.metric("技术方向数", len(df["核心技术"].unique()) if not df.empty else 0)
+    st.caption(f"共显示 {len(df)} 条专利记录（实时来自 PostgreSQL patents 表）")
 
-
-def _get_sample_df() -> pd.DataFrame:
-    """示例专利数据"""
-    return pd.DataFrame(
-        {
-            "专利标题": [
-                "基于 AI 的健康传感数据融合方法",
-                "可穿戴生物信号处理系统",
-                "低功耗温度传感器结构",
-                "手势识别神经网络模型",
-                "睡眠质量实时评估算法",
-            ],
-            "申请人": ["Apple Inc.", "Samsung", "Oura Ring", "Garmin", "Fitbit"],
-            "核心技术": [
-                "AI 数据融合",
-                "生物信号处理",
-                "温度传感器",
-                "手势识别",
-                "睡眠监测",
-            ],
-            "申请日期": [
-                "2024-01-15",
-                "2024-03-20",
-                "2024-06-10",
-                "2024-08-05",
-                "2024-11-22",
-            ],
-            "风险等级": ["🔴 高", "🔴 高", "🟡 中", "🟡 中", "🟢 低"],
-        }
-    )
+    # ---- 分析摘要（如果有当次分析结果）----
+    if "latest_result" in st.session_state:
+        patent_analysis = st.session_state["latest_result"].get("patent_analysis", "")
+        if patent_analysis:
+            st.markdown("<br>", unsafe_allow_html=True)
+            section_header("AI 专利格局分析")
+            st.markdown(patent_analysis)
 
 
 render_patent_matrix()

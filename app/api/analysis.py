@@ -8,10 +8,14 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import run_agent
+from app.core.database import get_db_session
+from app.models.report import AnalysisReport
+from app.repositories.report_repo import ReportRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -49,37 +53,53 @@ class AnalysisHistoryItem(BaseModel):
     query: str
     status: str
     created_at: str
-
-
-# ---- 内存中的报告存储 (开发阶段) ----
-_reports: dict[str, dict[str, Any]] = {}
+    patent_summary: str | None = None
+    trend_summary: str | None = None
 
 
 @router.post("/run", response_model=AnalysisResponse)
-async def run_analysis(request: AnalysisRequest):
+async def run_analysis(
+    request: AnalysisRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
     """
     触发完整的合规推理智能体工作流
 
     接收产品关键词，执行：
-    1. 任务规划 → 2. 专利搜索 → 3. 趋势分析 → 4. 报告生成 → 5. 质量审核
+    1. 任务规划 → 2. 专利搜索 → 3. 趋势分析 → 4. 报告生成 → 5. 质量审核 → 6. DB 持久化
     """
-    report_id = str(uuid.uuid4())
+    # 1. 在 DB 中创建 "pending" 状态的报告记录
+    report_id = uuid.uuid4()
+    repo = ReportRepository(session)
+    db_report = AnalysisReport(
+        id=report_id,
+        query=request.query[:200],
+        extra_context=request.extra_context,
+        status="running",
+    )
+    await repo.create(db_report)
 
+    report_id_str = str(report_id)
     logger.info(
-        f"[API] Starting analysis: query='{request.query}', report_id={report_id}"
+        f"[API] Starting analysis: query='{request.query}', report_id={report_id_str}"
     )
 
     try:
-        # 执行智能体工作流
+        # 2. 执行智能体工作流（将 report_id 注入 state，供 memory_node 使用）
         final_state = await run_agent(
             query=request.query,
             extra_context=request.extra_context,
             user_id=request.user_id,
+            report_id=report_id_str,
         )
 
-        # 构建响应
+        # 3. 若 agent 出错，更新状态为 failed
+        if final_state.get("error"):
+            await repo.update_status(report_id, "failed")
+
+        # 4. 构建响应
         response = AnalysisResponse(
-            report_id=report_id,
+            report_id=report_id_str,
             query=request.query,
             status="completed" if not final_state.get("error") else "failed",
             final_report=final_state.get("final_report")
@@ -93,46 +113,66 @@ async def run_analysis(request: AnalysisRequest):
             error=final_state.get("error"),
         )
 
-        # 存储报告
-        _reports[report_id] = {
-            "response": response.model_dump(),
-            "state": {
-                k: v
-                for k, v in final_state.items()
-                if isinstance(v, (str, int, float, bool, list, dict, type(None)))
-            },
-        }
-
         return response
 
     except Exception as e:
         logger.error(f"[API] Analysis failed: {e}")
+        # 标记数据库记录为失败
+        try:
+            await repo.update_status(report_id, "failed")
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/", response_model=list[AnalysisHistoryItem])
+async def list_reports(
+    limit: int = 50,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """获取历史分析列表（从数据库读取，重启后依然保留）"""
+    repo = ReportRepository(session)
+    reports = await repo.get_recent(limit=limit)
+
+    return [
+        AnalysisHistoryItem(
+            report_id=str(r.id),
+            query=r.query,
+            status=r.status,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+            patent_summary=r.patent_summary,
+            trend_summary=r.trend_summary,
+        )
+        for r in reports
+    ]
+
+
 @router.get("/{report_id}", response_model=AnalysisResponse)
-async def get_report(report_id: str):
-    """获取分析报告"""
-    if report_id not in _reports:
+async def get_report(
+    report_id: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """获取单个分析报告（从数据库读取）"""
+    try:
+        rid = uuid.UUID(report_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid report_id format")
+
+    repo = ReportRepository(session)
+    report = await repo.get_by_id(rid)
+
+    if not report:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    return AnalysisResponse(**_reports[report_id]["response"])
-
-
-@router.get("/", response_model=list[AnalysisHistoryItem])
-async def list_reports():
-    """获取历史分析列表"""
-    from datetime import datetime
-
-    items = []
-    for rid, data in _reports.items():
-        resp = data["response"]
-        items.append(
-            AnalysisHistoryItem(
-                report_id=rid,
-                query=resp.get("query", ""),
-                status=resp.get("status", "unknown"),
-                created_at=datetime.now().isoformat(),
-            )
-        )
-    return items
+    meta = report.metadata_json or {}
+    return AnalysisResponse(
+        report_id=str(report.id),
+        query=report.query,
+        status=report.status,
+        final_report=report.full_report,
+        patent_count=meta.get("patent_count", 0),
+        trend_keywords=meta.get("trend_count", 0),
+        iterations=meta.get("iteration_count", 0),
+        patent_analysis=report.patent_summary,
+        trend_analysis=report.trend_summary,
+    )

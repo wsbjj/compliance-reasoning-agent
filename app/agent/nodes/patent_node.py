@@ -2,6 +2,7 @@
 Node_Fetch_Patents — 专利搜索节点 (Tools)
 
 通过 MCP 适配器调用专利搜索工具，获取专利数据并进行 LLM 分析。
+完成后将专利数据持久化到 PostgreSQL patents 表。
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ async def patent_node(state: AgentState) -> AgentState:
     Tools: 专利数据获取
     - 搜索 Google Patents / USPTO
     - LLM 提取技术点和竞品分类
+    - 持久化到数据库
     """
     query = state.get("query", "")
     search_keywords = state.get("search_keywords", [query])
@@ -52,7 +54,47 @@ async def patent_node(state: AgentState) -> AgentState:
     # 2. LLM 分析专利格局
     analysis_result = await llm_service.analyze_patents(unique_patents, query)
 
+    # 3. 持久化到数据库
+    await _save_patents_to_db(unique_patents, query)
+
     return {
         "patents": unique_patents,
         "patent_analysis": analysis_result.get("tech_analysis", ""),
     }
+
+
+async def _save_patents_to_db(patents: list[dict], search_query: str) -> None:
+    """将专利数据批量写入数据库"""
+    if not patents:
+        return
+
+    try:
+        from app.core.database import get_session_factory
+        from app.repositories.patent_repo import PatentRepository
+        from app.models.patent import Patent
+
+        factory = get_session_factory()
+        async with factory() as session:
+            repo = PatentRepository(session)
+            patent_records = [
+                Patent(
+                    title=p.get("title", "Unknown")[:500],
+                    assignee=p.get("assignee", "")[:300] if p.get("assignee") else None,
+                    abstract=p.get("abstract"),
+                    patent_id=p.get("patent_id", "")[:50] if p.get("patent_id") else None,
+                    filing_date=p.get("filing_date", "")[:30] if p.get("filing_date") else None,
+                    search_query=search_query[:200],
+                    source=p.get("source", "serpapi")[:20],
+                    tech_points=p.get("tech_points"),
+                    raw_data=p,
+                )
+                for p in patents
+            ]
+            await repo.bulk_create(patent_records)
+            logger.info(
+                f"[Node_Fetch_Patents → DB] Saved {len(patent_records)} patents "
+                f"for query='{search_query}'"
+            )
+    except Exception as e:
+        # DB 写入失败不中断主流程
+        logger.warning(f"[Node_Fetch_Patents → DB] Failed to save patents: {e}")

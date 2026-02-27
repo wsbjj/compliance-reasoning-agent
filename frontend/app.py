@@ -137,20 +137,73 @@ def main():
     st.markdown("<br>", unsafe_allow_html=True)
     section_header("历史分析记录")
 
+    col_refresh, _ = st.columns([1, 5])
+    with col_refresh:
+        refresh = st.button("🔄 刷新记录", use_container_width=True)
+
+    _render_history(api_base)
+
+
+def _render_history(api_base: str) -> None:
+    """渲染历史分析记录列表"""
+    STATUS_BADGE = {
+        "completed": "✅ 完成",
+        "running":   "⏳ 运行中",
+        "failed":    "❌ 失败",
+        "pending":   "🕐 等待中",
+    }
+
     try:
         import httpx
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(f"{api_base}/api/analysis/")
-            if resp.status_code == 200:
-                history = resp.json()
-                if history:
-                    import pandas as pd
-                    df = pd.DataFrame(history)
-                    st.dataframe(df, use_container_width=True)
-                else:
-                    st.info("暂无历史记录，运行分析后将在此展示")
-            else:
-                st.info("无法获取历史记录")
+            if resp.status_code != 200:
+                st.info("无法获取历史记录，请确认后端已启动")
+                return
+            history = resp.json()
+
+        if not history:
+            st.info("暂无历史记录，运行分析后将在此展示")
+            return
+
+        # 逐条渲染
+        for item in history:
+            status_raw = item.get("status", "unknown")
+            badge = STATUS_BADGE.get(status_raw, f"❓ {status_raw}")
+            created_at = item.get("created_at", "")[:19].replace("T", " ")
+            query_text = item.get("query", "—")
+            report_id = item.get("report_id", "")
+
+            with st.expander(
+                f"{badge}  **{query_text}**  —  {created_at}",
+                expanded=False,
+            ):
+                col_a, col_b = st.columns([1, 3])
+                with col_a:
+                    st.caption("报告 ID")
+                    st.code(report_id, language=None)
+                with col_b:
+                    # 点击"查看完整报告"时，从 API 拉取详情
+                    if st.button("📄 查看完整报告", key=f"view_{report_id}"):
+                        try:
+                            with httpx.Client(timeout=15.0) as c:
+                                detail = c.get(
+                                    f"{api_base}/api/analysis/{report_id}"
+                                ).json()
+                            full = detail.get("final_report", "")
+                            if full:
+                                st.markdown(full)
+                            else:
+                                st.warning("报告内容为空，可能仍在生成中")
+                        except Exception as e:
+                            st.error(f"获取报告失败: {e}")
+
+                # 摘要预览
+                patent_sum = item.get("patent_summary") or ""
+                if patent_sum:
+                    st.caption("📋 专利分析摘要")
+                    st.markdown(patent_sum[:400] + "…" if len(patent_sum) > 400 else patent_sum)
+
     except Exception:
         st.info("💡 请先启动后端服务: `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`")
 

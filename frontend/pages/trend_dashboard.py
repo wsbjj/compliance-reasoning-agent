@@ -1,5 +1,6 @@
 """
-趋势仪表盘 — Google Trends 搜索指数 · 增长率分析 · 高优增长词汇
+趋势仪表盘 — 真实搜索指数 · CAGR 增长率分析 · 高潜力增长词汇
+数据来源：PostgreSQL trend_data / trend_summaries 表（通过 /api/trends/ 接口）
 """
 import sys
 import os
@@ -35,130 +36,181 @@ st.set_page_config(
     page_title="趋势仪表盘 | 合规优化智能体", page_icon="📈", layout="wide"
 )
 inject_global_styles()
-render_sidebar()
+api_base = render_sidebar()
 
-page_title("动态趋势分析仪表盘", "搜索指数 · 年复合增长率(CAGR) · 高潜力增长词汇榜单")
+page_title("动态趋势分析仪表盘", "搜索指数 · 年复合增长率(CAGR) · 高潜力增长词汇榜单 — 数据实时来自数据库")
 
 
 def render_trend_dashboard():
-    """渲染趋势仪表盘"""
+    """渲染趋势仪表盘（真实数据库数据）"""
+    import httpx
 
-    # 快速趋势查询
-    section_header("快速趋势查询")
+    # ---- 获取历史查询词列表 ----
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            q_resp = client.get(f"{api_base}/api/trends/queries")
+            query_list = q_resp.json() if q_resp.status_code == 200 else []
+    except Exception:
+        query_list = []
 
-    q_col1, q_col2, q_col3 = st.columns([3, 1, 1])
-    with q_col1:
-        keywords_input = st.text_input(
-            "关键词（多个用逗号分隔）",
-            placeholder="smart ring, wearable device, health tracker",
+    if not query_list:
+        st.info(
+            "📭 数据库中暂无趋势数据。请先在「分析看板」主页输入产品关键词并运行分析，"
+            "分析完成后趋势数据将自动写入数据库并在此展示。"
         )
-    with q_col2:
-        timeframe = st.selectbox("时间范围", ["12 个月", "24 个月", "36 个月"], index=2)
-    with q_col3:
-        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        run_btn = st.button("拉取趋势数据", type="primary", use_container_width=True)
+        # 若有当次会话数据，展示 trend_analysis 文本
+        if "latest_result" in st.session_state:
+            ta = st.session_state["latest_result"].get("trend_analysis", "")
+            if ta:
+                section_header("本次分析趋势摘要")
+                st.markdown(ta)
+        return
 
-    if run_btn:
-        if keywords_input:
-            keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
-            months_map = {"12 个月": 12, "24 个月": 24, "36 个月": 36}
-            months = months_map.get(timeframe, 36)
-            _fetch_and_display_trends(keywords, months)
-        else:
-            st.warning("请输入至少一个关键词")
+    # ---- 查询词选择器 ----
+    section_header("选择分析任务")
+    selected_query = st.selectbox(
+        "选择要查看的分析关键词",
+        query_list,
+        help="下拉菜单显示所有已完成分析并写入数据库的查询词"
+    )
 
-    # 已有分析结果
+    # ---- 拉取趋势时序数据 (折线图) ----
+    st.markdown("<br>", unsafe_allow_html=True)
+    section_header("搜索指数趋势折线图")
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            data_resp = client.get(
+                f"{api_base}/api/trends/data",
+                params={"search_query": selected_query}
+            )
+            trend_data = data_resp.json() if data_resp.status_code == 200 else []
+    except Exception as e:
+        st.warning(f"加载趋势时序数据失败: {e}")
+        trend_data = []
+
+    if trend_data:
+        _render_trend_chart(trend_data, selected_query)
+    else:
+        st.info(f"「{selected_query}」暂无时序趋势数据")
+
+    # ---- 拉取 CAGR 摘要榜单 ----
+    st.markdown("<br>", unsafe_allow_html=True)
+    _render_cagr_ranking(api_base, selected_query)
+
+    # ---- 当次分析文本摘要 ----
     if "latest_result" in st.session_state:
-        st.markdown("<br>", unsafe_allow_html=True)
-        result = st.session_state["latest_result"]
-        trend_analysis = result.get("trend_analysis", "")
-
+        trend_analysis = st.session_state["latest_result"].get("trend_analysis", "")
         if trend_analysis:
-            section_header("最近分析的趋势摘要")
+            st.markdown("<br>", unsafe_allow_html=True)
+            section_header("最近分析的趋势摘要（当前会话）")
             st.markdown(trend_analysis)
 
-        _render_cagr_ranking()
 
+def _render_trend_chart(trend_data: list[dict], query: str):
+    """渲染真实趋势时序折线图"""
+    import pandas as pd
 
-def _fetch_and_display_trends(keywords: list[str], months: int):
-    """生成趋势折线图（示例数据）"""
-    import random
-    import numpy as np
+    # 按 keyword 分组
+    df = pd.DataFrame(trend_data)
+    if df.empty or "keyword" not in df.columns:
+        st.info("暂无可绘图的时序数据")
+        return
 
-    with st.spinner(f"正在加载 {len(keywords)} 个关键词的趋势数据（过去 {months} 个月）..."):
-        dates = pd.date_range(end=pd.Timestamp.now(), periods=months, freq="MS")
-
-        fig = go.Figure()
-        for kw in keywords:
-            base = random.randint(20, 60)
-            trend = np.cumsum(np.random.randn(months) * 3) + base
-            trend = np.maximum(trend, 0)
-            fig.add_trace(
-                go.Scatter(
-                    x=dates,
-                    y=trend,
-                    mode="lines+markers",
-                    name=kw,
-                    line=dict(width=2.5),
-                    marker=dict(size=5, symbol="circle"),
-                )
+    fig = go.Figure()
+    for kw in df["keyword"].unique():
+        sub = df[df["keyword"] == kw].sort_values("date")
+        fig.add_trace(
+            go.Scatter(
+                x=sub["date"],
+                y=sub["value"],
+                mode="lines+markers",
+                name=kw,
+                line=dict(width=2.5),
+                marker=dict(size=5, symbol="circle"),
             )
-
-        fig.update_layout(
-            **CHART_LAYOUT,
-            title="关键词搜索趋势对比",
-            xaxis_title="时间",
-            yaxis_title="搜索指数",
-            height=460,
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        st.info(
-            "📌 当前展示为模拟数据。接入 Google Trends / SerpAPI 后将展示真实搜索指数。"
         )
 
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title=f"「{query}」— 搜索指数走势",
+        xaxis_title="日期",
+        yaxis_title="搜索指数",
+        height=460,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"共 {len(trend_data)} 条趋势时序数据点，来源：PostgreSQL trend_data 表")
 
-def _render_cagr_ranking():
-    """渲染 CAGR 榜单"""
-    st.markdown("<br>", unsafe_allow_html=True)
-    section_header("高潜力增长词汇榜单 TOP 5")
 
-    ranking_data = {
-        "排名": ["🥇 第一", "🥈 第二", "🥉 第三", "第四", "第五"],
-        "关键词": [
-            "smart ring",
-            "AI wearable",
-            "health monitor",
-            "fitness tracker",
-            "smart glasses",
-        ],
-        "年复合增长率（CAGR）": ["45.2%", "38.7%", "32.1%", "28.5%", "22.3%"],
-        "月均增长率（CMGR）": ["3.1%", "2.7%", "2.3%", "2.1%", "1.7%"],
-        "趋势方向": ["📈 上升", "📈 上升", "📈 上升", "📈 上升", "📈 上升"],
-    }
-    df = pd.DataFrame(ranking_data)
+def _render_cagr_ranking(api_base: str, selected_query: str):
+    """渲染真实 CAGR 榜单"""
+    section_header("高潜力增长词汇榜单（按 CAGR 排序）")
+
+    import httpx
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(
+                f"{api_base}/api/trends/summaries",
+                params={"search_query": selected_query, "limit": 20}
+            )
+            summaries = resp.json() if resp.status_code == 200 else []
+    except Exception as e:
+        st.warning(f"加载 CAGR 数据失败: {e}")
+        summaries = []
+
+    if not summaries:
+        st.info(f"「{selected_query}」暂无 CAGR 数据")
+        return
+
+    # 构建表格
+    medals = ["🥇", "🥈", "🥉"] + [""] * 20
+    rows = []
+    cagr_vals = []
+    kw_vals = []
+    for i, s in enumerate(summaries):
+        cagr = s.get("cagr")
+        cmgr = s.get("cmgr")
+        cagr_str = f"{cagr * 100:.2f}%" if cagr is not None else "N/A"
+        cmgr_str = f"{cmgr * 100:.2f}%" if cmgr is not None else "N/A"
+        rows.append({
+            "排名": f"{medals[i]} 第 {i+1}",
+            "关键词": s.get("keyword", "—"),
+            "年复合增长率（CAGR）": cagr_str,
+            "月均增长率（CMGR）": cmgr_str,
+            "起始值": s.get("beginning_value"),
+            "结束值": s.get("ending_value"),
+            "时间范围（月）": s.get("timeframe_months"),
+        })
+        kw_vals.append(s.get("keyword", ""))
+        cagr_vals.append(cagr * 100 if cagr is not None else 0)
+
+    df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
+    st.caption(f"共 {len(summaries)} 条摘要记录，来源：PostgreSQL trend_summaries 表")
 
     # CAGR 柱状图
-    fig_bar = go.Figure(
-        go.Bar(
-            x=ranking_data["关键词"],
-            y=[45.2, 38.7, 32.1, 28.5, 22.3],
-            marker=dict(
-                color=["#3B82F6", "#60A5FA", "#93C5FD", "#BFDBFE", "#DBEAFE"],
-                line=dict(color="rgba(59,130,246,0.5)", width=1),
-            ),
-            text=ranking_data["年复合增长率（CAGR）"],
-            textposition="outside",
-            textfont=dict(family="Fira Code", color="#E2E8F0"),
+    if any(v > 0 for v in cagr_vals):
+        colors = ["#3B82F6", "#60A5FA", "#93C5FD", "#BFDBFE"] + ["#DBEAFE"] * 20
+        fig_bar = go.Figure(
+            go.Bar(
+                x=kw_vals,
+                y=cagr_vals,
+                marker=dict(
+                    color=colors[:len(kw_vals)],
+                    line=dict(color="rgba(59,130,246,0.5)", width=1),
+                ),
+                text=[f"{v:.1f}%" for v in cagr_vals],
+                textposition="outside",
+                textfont=dict(family="Fira Code", color="#E2E8F0"),
+            )
         )
-    )
-    fig_bar.update_layout(
-        **CHART_LAYOUT,
-        title="CAGR 高潜力词汇对比",
-        yaxis_title="年复合增长率 (%)",
-        height=360,
-    )
-    st.plotly_chart(fig_bar, use_container_width=True)
+        fig_bar.update_layout(
+            **CHART_LAYOUT,
+            title=f"「{selected_query}」— CAGR 高潜力词汇对比",
+            yaxis_title="年复合增长率 (%)",
+            height=360,
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
 
     with st.expander("📐 CAGR 计算公式说明"):
         st.latex(
