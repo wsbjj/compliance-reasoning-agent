@@ -7,11 +7,13 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from frontend.styles import inject_global_styles, page_title, section_header
+from frontend.sidebar import render_sidebar
 
 st.set_page_config(
     page_title="分析报告 | 合规优化智能体", page_icon="🔍", layout="wide"
 )
 inject_global_styles()
+render_sidebar()
 
 page_title("窗口期预警简报", "AI 深度分析报告 — 专利壁垒 × 市场趋势 × 进入时机研判")
 

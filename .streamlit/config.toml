@@ -20,3 +20,7 @@ runOnSave = false
 [browser]
 # 阻止自动打开浏览器
 serverAddress = "localhost"
+
+[client]
+# 隐藏侧边栏的默认页面导航树，我们将通过 st.page_link 渲染中文导航
+showSidebarNavigation = false

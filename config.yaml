@@ -8,7 +8,7 @@ data_sources:
   # 专利数据提供商: serpapi | uspto
   patent_provider: "serpapi"
   # 趋势数据提供商: pytrends | rainforest | keepa
-  trend_provider: "rainforest"
+  trend_provider: "pytrends"
 
 # LLM 配置
 llm:

@@ -8,9 +8,11 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from frontend.styles import inject_global_styles, page_title, section_header
+from frontend.sidebar import render_sidebar
 
 st.set_page_config(page_title="专利矩阵 | 合规优化智能体", page_icon="📋", layout="wide")
 inject_global_styles()
+render_sidebar()
 
 page_title("竞品专利布局矩阵", "按申请人 × 技术方向分类的竞争格局全景")
 

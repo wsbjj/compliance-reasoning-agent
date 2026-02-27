@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from frontend.styles import inject_global_styles, page_title, section_header
+from frontend.sidebar import render_sidebar
 
 # 全局 Plotly 主题
 CHART_LAYOUT = dict(
@@ -34,6 +35,7 @@ st.set_page_config(
     page_title="趋势仪表盘 | 合规优化智能体", page_icon="📈", layout="wide"
 )
 inject_global_styles()
+render_sidebar()
 
 page_title("动态趋势分析仪表盘", "搜索指数 · 年复合增长率(CAGR) · 高潜力增长词汇榜单")
 

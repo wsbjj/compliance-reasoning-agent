@@ -53,7 +53,14 @@ class TrendService:
         try:
             from pytrends.request import TrendReq
 
-            pytrend = TrendReq(hl="en-US", tz=360)
+            pytrend = TrendReq(
+                hl="en-US",
+                tz=360,
+                proxies=["http://127.0.0.1:7890"],   # 本地代理
+                retries=3,
+                backoff_factor=0.5,
+                timeout=(10, 25),
+            )
 
             # pytrends 格式: "today 36-m" 或 "2021-01-01 2024-01-01"
             timeframe = f"today {timeframe_months}-m"
