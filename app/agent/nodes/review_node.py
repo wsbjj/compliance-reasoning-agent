@@ -35,7 +35,6 @@ async def review_node(state: AgentState) -> AgentState:
             f"[Node_Review] Max iterations ({max_iterations}) reached, force passing"
         )
         return {
-            **state,
             "final_report": draft,
             "review_passed": True,
             "review_feedback": "已达最大迭代次数，自动通过。",
@@ -51,7 +50,6 @@ async def review_node(state: AgentState) -> AgentState:
     logger.info(f"[Node_Review] Review {'PASSED' if passed else 'FAILED'}")
 
     return {
-        **state,
         "final_report": draft if passed else state.get("final_report", ""),
         "review_passed": passed,
         "review_feedback": feedback,

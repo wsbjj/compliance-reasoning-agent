@@ -17,9 +17,10 @@ class AgentState(TypedDict, total=False):
 
     # ---- 输入 ----
     # 用户输入的产品关键词（如 "Smart Ring"）
-    query: str
+    # Annotated + lambda：若多个节点同时写入，取后者（新值），防止并发冲突
+    query: Annotated[str, lambda a, b: b]
     # 用户提供的额外上下文信息（如 "AI API 成本下降 80%"）
-    extra_context: str
+    extra_context: Annotated[str, lambda a, b: b]
 
     # ---- Node_Plan 输出 ----
     # 任务规划描述

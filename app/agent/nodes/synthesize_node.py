@@ -53,7 +53,6 @@ async def synthesize_node(state: AgentState) -> AgentState:
     )
 
     return {
-        **state,
         "draft_report": report,
         "iteration_count": iteration + 1,
     }

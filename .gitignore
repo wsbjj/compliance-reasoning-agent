@@ -32,3 +32,8 @@ logs/
 # Database
 *.db
 *.sqlite3
+
+# Temporary / Agent
+tmp_*.md
+.agent/
+.streamlit/secrets.toml

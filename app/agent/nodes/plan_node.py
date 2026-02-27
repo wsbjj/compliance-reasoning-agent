@@ -72,7 +72,6 @@ async def plan_node(state: AgentState) -> AgentState:
     )
 
     return {
-        **state,
         "plan": plan,
         "search_keywords": search_keywords,
         "memory_context": memory_context,

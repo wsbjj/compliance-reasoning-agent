@@ -53,7 +53,6 @@ async def patent_node(state: AgentState) -> AgentState:
     analysis_result = await llm_service.analyze_patents(unique_patents, query)
 
     return {
-        **state,
         "patents": unique_patents,
         "patent_analysis": analysis_result.get("tech_analysis", ""),
     }

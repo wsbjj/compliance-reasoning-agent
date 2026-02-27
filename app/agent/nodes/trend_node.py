@@ -56,7 +56,6 @@ async def trend_node(state: AgentState) -> AgentState:
     )
 
     return {
-        **state,
         "trends": trends,
         "trend_summaries": summaries,
         "trend_analysis": trend_analysis,

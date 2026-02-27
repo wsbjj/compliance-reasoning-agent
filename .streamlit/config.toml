@@ -1,0 +1,22 @@
+# .streamlit/config.toml — 合规优化智能体 Streamlit 主题配置
+# 与 frontend-standards.md 中定义的设计系统保持一致
+
+[theme]
+# 主色：品牌蓝（用于按钮、强调元素）
+primaryColor = "#3B82F6"
+# 主背景：深空黑
+backgroundColor = "#0A0F1E"
+# 次级背景：卡片/侧边栏背景
+secondaryBackgroundColor = "#0F172A"
+# 主文字：高对比白
+textColor = "#E2E8F0"
+# 字体
+font = "sans serif"
+
+[server]
+# 文件变化时自动重载（开发模式）
+runOnSave = false
+
+[browser]
+# 阻止自动打开浏览器
+serverAddress = "localhost"
