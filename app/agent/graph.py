@@ -9,10 +9,12 @@ LangGraph StateGraph 构建
 终端节点调用路径追踪 (astream):
   每个节点执行完后，自动打印调用路径和耗时到终端。
 """
+
 from __future__ import annotations
 
 import logging
 import time
+from typing import Any, Awaitable, Callable
 
 from langgraph.graph import StateGraph, END
 
@@ -29,13 +31,33 @@ logger = logging.getLogger(__name__)
 # 节点执行顺序（用于打印路径追踪）
 _NODE_ORDER = ["plan", "patents", "trends", "synthesize", "review", "memory"]
 _NODE_LABELS = {
-    "plan":       "任务规划 (Reflect 1)",
-    "patents":    "专利搜索 + DB写入 (Tools, 并行)",
-    "trends":     "趋势分析 + DB写入 (Tools, 并行)",
+    "plan": "任务规划 (Reflect 1)",
+    "patents": "专利搜索 + DB写入 (Tools, 并行)",
+    "trends": "趋势分析 + DB写入 (Tools, 并行)",
     "synthesize": "报告生成 (Action)",
-    "review":     "质量审核 (Reflect 2)",
-    "memory":     "记忆更新 + 报告持久化 (Memory)",
+    "review": "质量审核 (Reflect 2)",
+    "memory": "记忆更新 + 报告持久化 (Memory)",
 }
+
+
+def _get_node_summary(node_name: str, output: dict) -> str:
+    """从节点输出中提取摘要信息（供进度回调使用）"""
+    if not isinstance(output, dict):
+        return ""
+    parts: list[str] = []
+    if "patents" in output:
+        parts.append(f"{len(output['patents'])} patents")
+    if "trends" in output:
+        parts.append(f"{len(output['trends'])} trend pts")
+    if "trend_summaries" in output:
+        parts.append(f"{len(output['trend_summaries'])} summaries")
+    if "review_passed" in output:
+        passed = output["review_passed"]
+        parts.append("PASSED" if passed else "RETRY")
+    if "search_keywords" in output:
+        kws = output["search_keywords"]
+        parts.append(f"keywords={kws}")
+    return ", ".join(parts)
 
 
 def _should_continue(state: AgentState) -> str:
@@ -117,6 +139,8 @@ async def run_agent(
     extra_context: str = "",
     user_id: str = "default",
     report_id: str = "",
+    countries: list[str] | None = None,
+    progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> AgentState:
     """
     执行合规推理智能体
@@ -126,6 +150,7 @@ async def run_agent(
         extra_context: 额外上下文信息
         user_id: 用户 ID
         report_id: 数据库报告 ID（由 API 层创建后传入）
+        countries: 国家筛选列表，如 ["US", "CN"]；None 或空列表表示不限
 
     Returns:
         最终的 AgentState
@@ -150,6 +175,7 @@ async def run_agent(
         "iteration_count": 0,
         "memory_context": "",
         "report_id": report_id,
+        "countries": countries or [],
         "error": None,
     }
 
@@ -174,6 +200,19 @@ async def run_agent(
                 if isinstance(node_output, dict):
                     final_state = {**final_state, **node_output}
 
+                # 向调用方推送进度事件
+                if progress_callback:
+                    summary = _get_node_summary(node_name, node_output)
+                    await progress_callback(
+                        {
+                            "type": "node_complete",
+                            "node": node_name,
+                            "label": _NODE_LABELS.get(node_name, node_name),
+                            "elapsed": round(elapsed, 1),
+                            "summary": summary,
+                        }
+                    )
+
         total_elapsed = time.monotonic() - start_time
         _print_trace_footer(visited_nodes, total_elapsed)
         logger.info("Agent execution completed successfully")
@@ -188,6 +227,7 @@ async def run_agent(
 
 
 # ---- 路径追踪辅助函数 ----
+
 
 def _print_trace_header(query: str) -> None:
     print("\n" + "═" * 60)

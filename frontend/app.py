@@ -4,6 +4,7 @@
 启动命令:
     streamlit run frontend/app.py --server.port 8501
 """
+
 import sys
 import os
 import streamlit as st
@@ -26,6 +27,7 @@ inject_global_styles()
 
 from sidebar import render_sidebar
 
+
 # ---- 主页面 ----
 def main():
     api_base = render_sidebar()
@@ -43,7 +45,7 @@ def main():
     # ---- 分析输入区 ----
     section_header("启动分析")
 
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([5, 3, 2])
     with col1:
         query = st.text_input(
             "产品核心关键词",
@@ -56,9 +58,48 @@ def main():
             placeholder="例如：近期 AI API 成本下降 80%，硬件成本持续下行...",
             height=72,
         )
+    with col3:
+        # ---- 国家筛选 ----
+        _ALL_LABEL = "全部国家"
+        COUNTRY_OPTIONS: dict[str, str] = {
+            "US": "美国 (US)",
+            "CN": "中国 (CN)",
+            "EP": "欧洲 (EP)",
+            "WO": "WIPO/PCT (WO)",
+            "JP": "日本 (JP)",
+            "KR": "韩国 (KR)",
+            "DE": "德国 (DE)",
+            "GB": "英国 (GB)",
+            "FR": "法国 (FR)",
+            "CA": "加拿大 (CA)",
+            "AU": "澳大利亚 (AU)",
+            "IN": "印度 (IN)",
+            "TW": "中国台湾 (TW)",
+            "MX": "墨西哥 (MX)",
+        }
+        all_country_labels = list(COUNTRY_OPTIONS.values())
+        # "全部国家" 置顶
+        dropdown_options = [_ALL_LABEL] + all_country_labels
+
+        selected_labels = st.multiselect(
+            "专利检索国家/地区",
+            options=dropdown_options,
+            default=[],
+            placeholder="不选择则检索全部",
+            help="选择要分析的专利所属国家/地区，留空或选择「全部国家」表示不限",
+        )
+
+    # 将显示标签映射回国家代码；选了 "全部国家" 或空 → 传空列表（后端不限）
+    label_to_code = {v: k for k, v in COUNTRY_OPTIONS.items()}
+    if _ALL_LABEL in selected_labels or not selected_labels:
+        selected_countries: list[str] = []
+    else:
+        selected_countries = [
+            label_to_code[lb] for lb in selected_labels if lb in label_to_code
+        ]
 
     # ---- 任务节流：运行中禁止重复提交 ----
-    if st.session_state["is_running"]:
+    if st.session_state["is_running"] and "pending_query" not in st.session_state:
         st.warning("⏳ 分析任务正在运行中，请耐心等待完成后再提交新任务…")
 
     btn_clicked = st.button(
@@ -76,36 +117,91 @@ def main():
             st.session_state["is_running"] = True
             st.session_state["pending_query"] = query
             st.session_state["pending_context"] = extra_context
+            st.session_state["pending_countries"] = selected_countries
             st.rerun()
 
     # ---- 实际执行分析（is_running=True 时在下一轮 render 中触发）----
     if st.session_state["is_running"] and "pending_query" in st.session_state:
         pending_q = st.session_state.pop("pending_query")
         pending_ctx = st.session_state.pop("pending_context", "")
-        with st.spinner("🤖 智能体正在规划任务、搜索专利、分析趋势，请稍候..."):
-            try:
-                import httpx
-                with httpx.Client(timeout=300.0) as client:
-                    resp = client.post(
-                        f"{api_base}/api/analysis/run",
-                        json={
-                            "query": pending_q,
-                            "extra_context": pending_ctx,
-                            "user_id": "streamlit_user",
-                        },
-                    )
-                    resp.raise_for_status()
-                    result = resp.json()
+        pending_countries = st.session_state.pop("pending_countries", [])
 
+        # ---- 链式进度显示（实时展示后端操作）----
+        progress_placeholder = st.empty()
+
+        # 有效完成节点（处理重试后重置）
+        effective_completed: dict[str, dict] = {}
+        retry_count = 0
+        result = None
+        error_msg = None
+
+        try:
+            import httpx
+            import json
+
+            with httpx.Client(timeout=300.0) as client:
+                with client.stream(
+                    "POST",
+                    f"{api_base}/api/analysis/run_stream",
+                    json={
+                        "query": pending_q,
+                        "extra_context": pending_ctx,
+                        "user_id": "streamlit_user",
+                        "countries": pending_countries,
+                    },
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        event = json.loads(line[6:])
+
+                        if event.get("type") == "node_complete":
+                            node = event["node"]
+                            # 审核未通过时重置 synthesize/review 状态
+                            if node == "review" and "RETRY" in event.get("summary", ""):
+                                retry_count += 1
+                                effective_completed.pop("synthesize", None)
+                                effective_completed.pop("review", None)
+                            else:
+                                effective_completed[node] = event
+                            _render_progress_chain(
+                                progress_placeholder, effective_completed, retry_count
+                            )
+
+                        elif event.get("type") == "result":
+                            result = event["data"]
+
+                        elif event.get("type") == "error":
+                            error_msg = event.get("message", "Unknown error")
+
+            if result:
+                # 最终渲染全部完成状态
+                _render_progress_chain(
+                    progress_placeholder, effective_completed, retry_count, done=True
+                )
                 st.session_state["latest_result"] = result
-                st.success(f"✅ 分析完成！共检索到 {result.get('patent_count', 0)} 篇专利")
+                st.session_state["_analysis_msg"] = (
+                    "success",
+                    f"分析完成！共检索到 {result.get('patent_count', 0)} 篇专利",
+                )
+            elif error_msg:
+                st.session_state["_analysis_msg"] = ("error", f"分析失败: {error_msg}")
 
-            except Exception as e:
-                st.error(f"❌ 分析失败: {e}")
-            finally:
-                # 无论成功失败，解除节流锁
-                st.session_state["is_running"] = False
+        except Exception as e:
+            st.session_state["_analysis_msg"] = ("error", f"分析失败: {e}")
+        finally:
+            # 无论成功失败，解除节流锁并刷新页面以清除过时 UI
+            st.session_state["is_running"] = False
+            st.rerun()
 
+    # ---- 显示上一次分析的完成/错误提示 ----
+    if "_analysis_msg" in st.session_state:
+        msg_type, msg_text = st.session_state.pop("_analysis_msg")
+        if msg_type == "success":
+            st.success(msg_text)
+        else:
+            st.error(msg_text)
 
     # ---- 结果展示 ----
     if "latest_result" in st.session_state:
@@ -117,13 +213,27 @@ def main():
 
         m1, m2, m3, m4 = st.columns(4)
         with m1:
-            st.metric("专利数量", result.get("patent_count", 0), help="搜索到的相关专利总数")
+            st.metric(
+                "专利数量", result.get("patent_count", 0), help="搜索到的相关专利总数"
+            )
         with m2:
-            st.metric("趋势关键词", result.get("trend_keywords", 0), help="分析的市场趋势词数量")
+            st.metric(
+                "趋势关键词",
+                result.get("trend_keywords", 0),
+                help="分析的市场趋势词数量",
+            )
         with m3:
-            st.metric("审核迭代次数", result.get("iterations", 0), help="AI 自我审核的循环次数")
+            st.metric(
+                "审核迭代次数",
+                result.get("iterations", 0),
+                help="AI 自我审核的循环次数",
+            )
         with m4:
-            status_map = {"success": "✅ 已完成", "error": "❌ 失败", "running": "⏳ 进行中"}
+            status_map = {
+                "success": "✅ 已完成",
+                "error": "❌ 失败",
+                "running": "⏳ 进行中",
+            }
             raw_status = result.get("status", "unknown")
             st.metric("分析状态", status_map.get(raw_status, raw_status))
 
@@ -171,17 +281,142 @@ def main():
     _render_history(api_base)
 
 
+def _render_progress_chain(
+    placeholder,
+    effective_completed: dict[str, dict],
+    retry_count: int = 0,
+    done: bool = False,
+) -> None:
+    """
+    渲染链式任务进度 — 实时展示后端各节点的执行状态
+
+    effective_completed: {node_id: event_dict} — 当前有效的已完成节点
+    retry_count: 审核重试次数
+    done: 全部流程是否结束
+    """
+    # 节点定义（与后端 graph 一致）
+    CHAIN_NODES = [
+        ("plan", "任务规划", "🧠"),
+        ("patents", "专利搜索 + DB写入", "🔍"),
+        ("trends", "趋势分析 + DB写入", "📈"),
+        ("synthesize", "报告生成", "📝"),
+        ("review", "质量审核", "🔎"),
+        ("memory", "记忆更新 + 持久化", "💾"),
+    ]
+    # 前驱关系（用于推断 "正在运行" 状态）
+    PREDS: dict[str, list[str]] = {
+        "plan": [],
+        "patents": ["plan"],
+        "trends": ["plan"],
+        "synthesize": ["patents", "trends"],
+        "review": ["synthesize"],
+        "memory": ["review"],
+    }
+
+    done_set = set(effective_completed.keys())
+
+    def _is_running(nid: str) -> bool:
+        if nid in done_set:
+            return False
+        return all(p in done_set for p in PREDS.get(nid, []))
+
+    # ---- 构建 HTML ----
+    parts: list[str] = [
+        "<style>"
+        "@keyframes agent-pulse{0%,100%{opacity:1}50%{opacity:.45}}"
+        "</style>"
+        "<div style=\"font-family:'Fira Code',monospace;font-size:13px;"
+        'line-height:1.5;padding:12px 0;">'
+    ]
+
+    for idx, (nid, label, icon) in enumerate(CHAIN_NODES):
+        is_parallel = nid in ("patents", "trends")
+        # 并行节点前缀
+        prefix = "├─" if is_parallel else "▶"
+
+        if nid in effective_completed:
+            info = effective_completed[nid]
+            elapsed = info.get("elapsed", 0)
+            summary = info.get("summary", "")
+            summary_html = (
+                f'<span style="color:#64748b;font-weight:400"> — {summary}</span>'
+                if summary
+                else ""
+            )
+            parts.append(
+                f'<div style="display:flex;align-items:center;gap:8px;'
+                f"padding:6px 14px;margin:3px 0;"
+                f"background:rgba(34,197,94,.08);border-left:3px solid #22c55e;"
+                f'border-radius:0 8px 8px 0;">'
+                f"<span>{prefix}</span>"
+                f'<span style="color:#22c55e;font-weight:700;">✅</span>'
+                f'<span style="color:#e2e8f0;font-weight:600;">{icon} {label}</span>'
+                f'<span style="color:#94a3b8;">({elapsed}s)</span>'
+                f"{summary_html}"
+                f"</div>"
+            )
+
+        elif _is_running(nid) and not done:
+            retry_hint = ""
+            if nid == "synthesize" and retry_count > 0:
+                retry_hint = (
+                    f'<span style="color:#94a3b8;margin-left:6px;">'
+                    f"(第 {retry_count + 1} 次)</span>"
+                )
+            parts.append(
+                f'<div style="display:flex;align-items:center;gap:8px;'
+                f"padding:6px 14px;margin:3px 0;"
+                f"background:rgba(59,130,246,.10);border-left:3px solid #3b82f6;"
+                f"border-radius:0 8px 8px 0;"
+                f'animation:agent-pulse 1.5s ease-in-out infinite;">'
+                f"<span>{prefix}</span>"
+                f'<span style="color:#3b82f6;font-weight:700;">⏳</span>'
+                f'<span style="color:#e2e8f0;font-weight:600;">{icon} {label}</span>'
+                f'<span style="color:#3b82f6;">正在运行...</span>'
+                f"{retry_hint}"
+                f"</div>"
+            )
+
+        else:
+            parts.append(
+                f'<div style="display:flex;align-items:center;gap:8px;'
+                f"padding:6px 14px;margin:3px 0;"
+                f"border-left:3px solid #334155;border-radius:0 8px 8px 0;"
+                f'opacity:.4;">'
+                f"<span>{prefix}</span>"
+                f'<span style="color:#475569;">○</span>'
+                f'<span style="color:#64748b;">{icon} {label}</span>'
+                f"</div>"
+            )
+
+        # 连接线（并行节点之间不画线）
+        if idx < len(CHAIN_NODES) - 1:
+            next_nid = CHAIN_NODES[idx + 1][0]
+            if not (is_parallel and next_nid in ("patents", "trends")):
+                c_color = "#22c55e" if nid in done_set else "#334155"
+                parts.append(
+                    f'<div style="color:{c_color};padding:0 0 0 20px;'
+                    f'line-height:1;font-size:12px;">│</div>'
+                )
+
+    parts.append("</div>")
+
+    with placeholder.container():
+        st.markdown("".join(parts), unsafe_allow_html=True)
+
+
 def _render_history(api_base: str) -> None:
     """渲染历史分析记录列表"""
     STATUS_BADGE = {
         "completed": "✅ 完成",
-        "running":   "⏳ 运行中",
-        "failed":    "❌ 失败",
-        "pending":   "🕐 等待中",
+        "running": "⏳ 运行中",
+        "failed": "❌ 失败",
+        "pending": "🕐 等待中",
     }
 
     try:
         import httpx
+
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(f"{api_base}/api/analysis/")
             if resp.status_code != 200:
@@ -229,10 +464,14 @@ def _render_history(api_base: str) -> None:
                 patent_sum = item.get("patent_summary") or ""
                 if patent_sum:
                     st.caption("📋 专利分析摘要")
-                    st.markdown(patent_sum[:400] + "…" if len(patent_sum) > 400 else patent_sum)
+                    st.markdown(
+                        patent_sum[:400] + "…" if len(patent_sum) > 400 else patent_sum
+                    )
 
     except Exception:
-        st.info("💡 请先启动后端服务: `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`")
+        st.info(
+            "💡 请先启动后端服务: `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`"
+        )
 
 
 def _render_trend_chart(result: dict):

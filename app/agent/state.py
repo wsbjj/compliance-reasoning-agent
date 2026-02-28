@@ -6,6 +6,7 @@ LangGraph StateGraph 的状态字典
       是因为 plan → patents 和 plan → trends 并行执行，两个节点都可能更新列表字段，
       LangGraph 需要一个 reducer 函数（此处为 add，即合并列表）来避免并发冲突。
 """
+
 from __future__ import annotations
 
 import operator
@@ -59,6 +60,10 @@ class AgentState(TypedDict, total=False):
     # ---- Memory ----
     # 历史记忆上下文
     memory_context: str
+
+    # ---- 筛选条件 ----
+    # 国家筛选列表，如 ["US", "CN", "EP"]；空列表表示不限
+    countries: list[str]
 
     # ---- 元数据 ----
     # 报告 ID (关联数据库)

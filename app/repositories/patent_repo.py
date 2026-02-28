@@ -2,6 +2,7 @@
 专利数据仓库 (Patent Repository)
 数据访问层 — CRUD + 按关键词/申请人查询
 """
+
 from __future__ import annotations
 
 import uuid
@@ -63,7 +64,7 @@ class PatentRepository:
         category: str | None = None,
         limit: int = 50,
     ) -> Sequence[Patent]:
-        """多条件搜索"""
+        """多条件搜索（limit=0 表示不限制条数，返回全部）"""
         stmt = select(Patent)
         if query:
             stmt = stmt.where(Patent.search_query == query)
@@ -71,9 +72,26 @@ class PatentRepository:
             stmt = stmt.where(Patent.assignee.ilike(f"%{assignee}%"))
         if category:
             stmt = stmt.where(Patent.category == category)
-        stmt = stmt.order_by(Patent.created_at.desc()).limit(limit)
+        stmt = stmt.order_by(Patent.created_at.desc())
+        if limit > 0:
+            stmt = stmt.limit(limit)
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+    async def find_existing_patent_ids(self, patent_ids: list[str]) -> set[str]:
+        """
+        批量查询哪些 patent_id 已存在于数据库中。
+        返回已存在的 patent_id 集合，用于写库前去重。
+        """
+        if not patent_ids:
+            return set()
+        # 过滤掉空字符串和 None
+        clean_ids = [pid for pid in patent_ids if pid]
+        if not clean_ids:
+            return set()
+        stmt = select(Patent.patent_id).where(Patent.patent_id.in_(clean_ids))
+        result = await self.session.execute(stmt)
+        return {row[0] for row in result.fetchall() if row[0]}
 
     async def delete_by_query(self, search_query: str) -> int:
         """删除某次查询的所有专利记录"""

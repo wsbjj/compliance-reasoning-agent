@@ -2,6 +2,7 @@
 专利查询服务 (Patent Service)
 业务逻辑层 — 工厂模式选择 SerpApi 或 USPTO 数据源
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,29 +23,56 @@ class PatentService:
         self.provider = self.yaml_config.data_sources.patent_provider
 
     async def search_patents(
-        self, query: str, max_results: int | None = None
+        self,
+        query: str,
+        max_results: int | None = None,
+        countries: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         搜索专利 — 根据 config.yaml 中的 provider 路由到对应实现
         返回标准化的专利数据列表
+
+        Args:
+            query: 搜索关键词
+            max_results: 最大结果数
+            countries: 国家筛选列表，如 ["US", "CN"]；None 或空列表表示不限
         """
         if max_results is None:
             max_results = self.yaml_config.agent.patent_search_limit
 
+        # 空列表视为不限
+        effective_countries = countries if countries else None
+
         if self.provider == "serpapi":
-            return await self._search_serpapi(query, max_results)
+            return await self._search_serpapi(
+                query, max_results, countries=effective_countries
+            )
         elif self.provider == "uspto":
             return await self._search_uspto(query, max_results)
         else:
             raise ValueError(f"Unsupported patent provider: {self.provider}")
 
     async def _search_serpapi(
-        self, query: str, max_results: int, countries: list[str] | None = None
+        self,
+        query: str,
+        max_results: int,
+        countries: list[str] | None = None,
+        status: str | None = None,
+        sort: str | None = None,
+        dups: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
+        patent_type: str | None = None,
+        language: str | None = None,
     ) -> list[dict[str, Any]]:
         """
-        通过 SerpApi 搜索 Google Patents
-        使用 google-search-results 包 (from serpapi import GoogleSearch)
-        支持国家筛选：countries=["US","CN"] → query 中追加 (country:US OR country:CN)
+        通过 SerpApi 搜索 Google Patents（google-search-results 包）
+
+        分页：page 为 1-indexed（第一页=1），num 每页最多 100 条
+        国家筛选：独立 country 参数，逗号分隔（如 "US,CN,WO"）
+        排序：sort=new（最新）/ old（最旧）
+        去重分组：dups 不传=Family同族去重；dups=language=显示全部公开文本
+        其他过滤：status / before / after / type / language
         """
         api_key = self.settings.serpapi_api_key
         if not api_key:
@@ -54,68 +82,107 @@ class PatentService:
         try:
             from serpapi import GoogleSearch  # google-search-results 包
 
-            # 构建国家筛选 query
-            if countries:
-                country_expr = " OR ".join(f"country:{c}" for c in countries)
-                search_q = f"{query} ({country_expr})"
-            else:
-                search_q = query
+            # 每页最多 100 条，max_results <= 100 时只需 1 次请求
+            num_per_page = min(max_results, 100)
+            results: list[dict[str, Any]] = []
+            # ⚠️ SerpApi Google Patents 的 page 参数是 1-indexed，page=1 为第一页
+            page_num = 1
 
-            params = {
-                "engine": "google_patents",
-                "q": search_q,
-                "api_key": api_key,
-            }
+            while len(results) < max_results:
+                params: dict[str, Any] = {
+                    "engine": "google_patents",
+                    "q": query,
+                    "api_key": api_key,
+                    "num": num_per_page,  # 每页条数（10-100）
+                    "page": page_num,  # 1-indexed 页码（文档默认值为 1）
+                }
 
-            search = GoogleSearch(params)
-            data = search.get_dict()
-            organic_results = data.get("organic_results", [])
+                # 国家筛选：专用 country 参数，逗号分隔
+                if countries:
+                    params["country"] = ",".join(countries)
 
-            results = []
-            for item in organic_results[:max_results]:
-                # 提取 figures 列表
-                figures = []
-                for fig in item.get("figures", []):
-                    if isinstance(fig, dict) and fig.get("thumbnail"):
-                        figures.append(fig["thumbnail"])
-                    elif isinstance(fig, str):
-                        figures.append(fig)
+                # 排序：new=最新 / old=最旧（注意：不是 Newest/Oldest）
+                if sort:
+                    params["sort"] = sort
 
-                results.append(
-                    {
-                        "title": item.get("title", ""),
-                        "assignee": item.get("assignee", ""),
-                        "abstract": item.get("snippet", ""),
-                        "patent_id": item.get("patent_id", ""),
-                        "filing_date": item.get("filing_date", ""),
-                        "priority_date": item.get("priority_date", ""),
-                        "publication_date": item.get("publication_date", ""),
-                        "inventor": item.get("inventor", ""),
-                        "pdf_url": item.get("pdf", ""),
-                        "thumbnail_url": item.get("thumbnail", ""),
-                        "figures": figures,
-                        "country_status": item.get("country_status", {}),
-                        "publication_number": item.get("publication_number", ""),
-                        "source": "serpapi",
-                        "raw_data": item,
-                    }
-                )
+                # 去重分组：不传=Family同族去重；"language"=显示全部公开文本
+                if dups:
+                    params["dups"] = dups
 
-            logger.info(f"SerpApi returned {len(results)} patents for '{search_q}'")
+                # 日期范围
+                if before:
+                    params["before"] = before  # e.g. "publication:20240101"
+                if after:
+                    params["after"] = after  # e.g. "filing:20200101"
+
+                # 法律状态 / 专利类型 / 语言
+                if status:
+                    params["status"] = status  # GRANT / APPLICATION
+                if patent_type:
+                    params["type"] = patent_type  # PATENT / DESIGN
+                if language:
+                    params["language"] = language  # ENGLISH / CHINESE / ...
+
+                search = GoogleSearch(params)
+                data = search.get_dict()
+                organic_results = data.get("organic_results", [])
+
+                if not organic_results:
+                    break  # 无更多结果
+
+                for item in organic_results:
+                    if len(results) >= max_results:
+                        break
+
+                    figures = []
+                    for fig in item.get("figures", []):
+                        if isinstance(fig, dict) and fig.get("thumbnail"):
+                            figures.append(fig["thumbnail"])
+                        elif isinstance(fig, str):
+                            figures.append(fig)
+
+                    results.append(
+                        {
+                            "title": item.get("title", ""),
+                            "assignee": item.get("assignee", ""),
+                            "abstract": item.get("snippet", ""),
+                            "patent_id": item.get("patent_id", ""),
+                            "filing_date": item.get("filing_date", ""),
+                            "priority_date": item.get("priority_date", ""),
+                            "publication_date": item.get("publication_date", ""),
+                            "inventor": item.get("inventor", ""),
+                            "pdf_url": item.get("pdf", ""),
+                            "thumbnail_url": item.get("thumbnail", ""),
+                            "figures": figures,
+                            "country_status": item.get("country_status", {}),
+                            "publication_number": item.get("publication_number", ""),
+                            "source": "serpapi",
+                            "raw_data": item,
+                        }
+                    )
+
+                # 本页不足 num_per_page → 已到最后一页
+                if len(organic_results) < num_per_page:
+                    break
+
+                # SerpApi 无下一页标记 → 停止
+                pagination = data.get("serpapi_pagination", {})
+                if not pagination.get("next"):
+                    break
+
+                page_num += 1
+
+            logger.info(
+                f"SerpApi returned {len(results)} patents for q='{query}' "
+                f"country={countries} status={status} sort={sort} dups={dups}"
+            )
             return results
 
         except Exception as e:
             logger.error(f"SerpApi search failed: {e}")
             return self._mock_patents(query)
 
-
-
-
-
-
-    async def _search_uspto(
-        self, query: str, max_results: int
-    ) -> list[dict[str, Any]]:
+    async def _search_uspto(self, query: str, max_results: int) -> list[dict[str, Any]]:
         """
         通过 USPTO API 搜索美国专利
         """
@@ -144,9 +211,9 @@ class PatentService:
                     results.append(
                         {
                             "title": item.get("inventionTitle", ""),
-                            "assignee": ", ".join(
-                                item.get("applicants", [])
-                            ) if isinstance(item.get("applicants"), list) else str(item.get("applicants", "")),
+                            "assignee": ", ".join(item.get("applicants", []))
+                            if isinstance(item.get("applicants"), list)
+                            else str(item.get("applicants", "")),
                             "abstract": item.get("abstractText", [None])[0]
                             if isinstance(item.get("abstractText"), list)
                             else item.get("abstractText", ""),
@@ -169,11 +236,11 @@ class PatentService:
         """降级模式 — 返回模拟数据供开发测试"""
         return [
             {
-                "title": f"Smart {query} Patent #{i+1}",
-                "assignee": f"Company {chr(65+i)}",
+                "title": f"Smart {query} Patent #{i + 1}",
+                "assignee": f"Company {chr(65 + i)}",
                 "abstract": f"A novel approach to {query} technology involving advanced sensing and AI.",
                 "patent_id": f"US2024{i:04d}",
-                "filing_date": f"2024-0{(i%9)+1}-15",
+                "filing_date": f"2024-0{(i % 9) + 1}-15",
                 "source": "mock",
                 "raw_data": {},
             }

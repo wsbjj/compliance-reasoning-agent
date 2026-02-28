@@ -4,6 +4,7 @@
   - 数据库历史专利展示（带图片/PDF/全字段）
   - 实时 SerpApi 搜索（含国家筛选，自动写库）
 """
+
 import sys
 import os
 import streamlit as st
@@ -12,7 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from frontend.styles import inject_global_styles, page_title, section_header
 from frontend.sidebar import render_sidebar
 
-st.set_page_config(page_title="专利矩阵 | 合规优化智能体", page_icon="📋", layout="wide")
+st.set_page_config(
+    page_title="专利矩阵 | 合规优化智能体", page_icon="📋", layout="wide"
+)
 inject_global_styles()
 api_base = render_sidebar()
 
@@ -37,6 +40,9 @@ COUNTRY_OPTIONS = {
     "🇲🇽 墨西哥": "MX",
 }
 
+_ALL_OPTION = "🌍 全部（不过滤）"
+LIVE_COUNTRY_OPTIONS = {_ALL_OPTION: None, **COUNTRY_OPTIONS}
+
 
 def _country_status_badge(status_dict: dict) -> str:
     """从 country_status 中生成状态徽章文字"""
@@ -51,7 +57,7 @@ def _country_status_badge(status_dict: dict) -> str:
 
 def _render_patent_card(p: dict, idx: int):
     """渲染单张专利卡片（Expander）"""
-    patent_id = p.get("patent_id") or p.get("publication_number") or f"#{idx+1}"
+    patent_id = p.get("patent_id") or p.get("publication_number") or f"#{idx + 1}"
     title = p.get("title") or "（无标题）"
     assignee = p.get("assignee") or "—"
     country_badge = _country_status_badge(p.get("country_status", {}))
@@ -81,7 +87,7 @@ def _render_patent_card(p: dict, idx: int):
                         try:
                             st.image(fig_url, use_container_width=True)
                         except Exception:
-                            st.caption(f"图 {fi+1}")
+                            st.caption(f"图 {fi + 1}")
 
         with right:
             st.markdown("#### 📋 基本信息")
@@ -160,10 +166,14 @@ def render_db_patent_matrix():
     col1, col2 = st.columns([2, 2])
     with col1:
         query_options = ["全部"] + stats.get("queries", [])
-        selected_query = st.selectbox("按分析关键词筛选", query_options, key="db_query_filter")
+        selected_query = st.selectbox(
+            "按分析关键词筛选", query_options, key="db_query_filter"
+        )
     with col2:
         filter_assignee = st.text_input(
-            "按申请人筛选", placeholder="输入公司/申请人名称...", key="db_assignee_filter"
+            "按申请人筛选",
+            placeholder="输入公司/申请人名称...",
+            key="db_assignee_filter",
         )
 
     st.button("🔍 搜索", type="primary", key="db_search_btn")
@@ -205,6 +215,29 @@ def render_db_patent_matrix():
 # ================================================================
 # 模块二：实时 SerpApi 专利搜索
 # ================================================================
+
+# 高级筛选选项映射
+_STATUS_OPTIONS = {
+    "全部": None,
+    "✅ 已授权 (GRANT)": "GRANT",
+    "📋 申请中 (APPLICATION)": "APPLICATION",
+}
+_SORT_OPTIONS = {
+    "默认（相关度）": None,
+    "最新优先 (new)": "new",
+    "最旧优先 (old)": "old",
+}
+_DUPS_OPTIONS = {
+    "同族去重（默认）": None,  # Family：同一技术族只显示一条
+    "显示全部公开文本 (language)": "language",  # Publication：每个国家公开文本都显示
+}
+_TYPE_OPTIONS = {
+    "全部": None,
+    "发明专利 (PATENT)": "PATENT",
+    "外观设计 (DESIGN)": "DESIGN",
+}
+
+
 def render_live_search():
     """实时调用 SerpApi 搜索专利（结果同步写库）"""
     import httpx
@@ -212,61 +245,219 @@ def render_live_search():
     section_header("🔍 实时专利搜索")
     st.caption("直接调用 SerpApi Google Patents，搜索结果自动写入数据库")
 
+    # ── 主搜索行 ──────────────────────────────────────────────────
     col1, col2 = st.columns([2, 2])
     with col1:
         live_query = st.text_input(
             "搜索关键词",
-            placeholder="例如：smart yoga mat、wireless earbuds",
+            placeholder="例如：smart yoga mat、(Coffee) OR (Tea)",
             key="live_query",
         )
     with col2:
         selected_countries_zh = st.multiselect(
             "国家/地区筛选（可多选，不选则搜索全球）",
-            options=list(COUNTRY_OPTIONS.keys()),
-            default=["🇺🇸 美国", "🇨🇳 中国"],
+            options=list(LIVE_COUNTRY_OPTIONS.keys()),
+            default=[_ALL_OPTION],
             key="live_countries",
         )
 
-    search_btn = st.button("🌐 搜索专利", type="primary", key="live_search_btn")
+    # ── 操作行：搜索按钮 + 获取条数 ──────────────────────────────
+    col_btn, col_spacer, col_num = st.columns([2, 1, 1])
+    with col_btn:
+        search_btn = st.button("🌐 搜索专利", type="primary", key="live_search_btn")
+    with col_spacer:
+        st.write("")
+    with col_num:
+        max_results = st.selectbox(
+            "获取条数",
+            options=[10, 20, 50, 100],
+            index=1,
+            key="live_max_results",
+            help="单次最多 100 条，设为 100 时只需 1 次 SerpApi 请求",
+        )
 
+    # ── 高级筛选（折叠） ─────────────────────────────────────────
+    with st.expander("🔧 高级筛选（可选）"):
+        adv1, adv2, adv3, adv4_dups = st.columns(4)
+        with adv1:
+            status_label = st.selectbox(
+                "法律状态",
+                options=list(_STATUS_OPTIONS.keys()),
+                key="live_status",
+                help="GRANT=已授权专利；APPLICATION=申请中专利",
+            )
+        with adv2:
+            sort_label = st.selectbox(
+                "排序方式",
+                options=list(_SORT_OPTIONS.keys()),
+                key="live_sort",
+                help="new=最新优先；old=最旧优先；默认=相关度",
+            )
+        with adv3:
+            type_label = st.selectbox(
+                "专利类型",
+                options=list(_TYPE_OPTIONS.keys()),
+                key="live_type",
+            )
+        with adv4_dups:
+            dups_label = st.selectbox(
+                "结果分组",
+                options=list(_DUPS_OPTIONS.keys()),
+                key="live_dups",
+                help="同族去重：每个专利族只显示一条；显示全部：每个国家公开文本都显示",
+            )
+
+        adv4, adv5 = st.columns(2)
+        with adv4:
+            date_after = st.text_input(
+                "日期下限（after）",
+                placeholder="filing:20200101",
+                key="live_after",
+                help="格式：type:YYYYMMDD，type 可选 priority / filing / publication",
+            )
+        with adv5:
+            date_before = st.text_input(
+                "日期上限（before）",
+                placeholder="publication:20240101",
+                key="live_before",
+                help="格式：type:YYYYMMDD",
+            )
+
+    # ── 触发搜索 ─────────────────────────────────────────────────
     if search_btn:
         if not live_query:
             st.warning("请输入搜索关键词")
             return
 
-        country_codes = [COUNTRY_OPTIONS[zh] for zh in selected_countries_zh]
+        country_codes = [
+            COUNTRY_OPTIONS[zh]
+            for zh in selected_countries_zh
+            if zh in COUNTRY_OPTIONS  # 排除"全部"选项
+        ]
         countries_param = ",".join(country_codes) if country_codes else None
 
-        # 展示实际 query 格式
-        if country_codes:
-            q_display = f"{live_query} ({' OR '.join(f'country:{c}' for c in country_codes)})"
-        else:
-            q_display = live_query
-        st.caption(f"🔎 实际搜索 Query：`{q_display}`")
+        # 高级筛选值
+        status_param = _STATUS_OPTIONS[status_label]
+        sort_param = _SORT_OPTIONS[sort_label]
+        type_param = _TYPE_OPTIONS[type_label]
+        dups_param = _DUPS_OPTIONS[dups_label]
+        after_param = date_after.strip() or None
+        before_param = date_before.strip() or None
 
-        with st.spinner("正在调用 SerpApi 搜索，并将结果写入数据库..."):
+        # 构建展示信息
+        filter_tags = []
+        if country_codes:
+            filter_tags.append(f"国家: {', '.join(country_codes)}")
+        if status_param:
+            filter_tags.append(f"状态: {status_param}")
+        if sort_param:
+            filter_tags.append(f"排序: {sort_param}")
+        if dups_param:
+            filter_tags.append(f"分组: {dups_param}")
+        if type_param:
+            filter_tags.append(f"类型: {type_param}")
+        if after_param:
+            filter_tags.append(f"after: {after_param}")
+        if before_param:
+            filter_tags.append(f"before: {before_param}")
+
+        st.caption(
+            f"🔎 搜索词：`{live_query}`"
+            + (f"　　筛选：{' | '.join(filter_tags)}" if filter_tags else "")
+        )
+
+        with st.spinner(
+            f"正在调用 SerpApi 搜索（最多 {max_results} 条），并将结果写入数据库..."
+        ):
             try:
-                params = {"q": live_query}
+                params: dict = {"q": live_query, "max_results": max_results}
                 if countries_param:
                     params["countries"] = countries_param
+                if status_param:
+                    params["status"] = status_param
+                if sort_param:
+                    params["sort"] = sort_param
+                if dups_param:
+                    params["dups"] = dups_param
+                if type_param:
+                    params["patent_type"] = type_param
+                if after_param:
+                    params["after"] = after_param
+                if before_param:
+                    params["before"] = before_param
 
-                with httpx.Client(timeout=60.0) as client:
+                with httpx.Client(timeout=120.0) as client:
                     resp = client.get(f"{api_base}/api/patents/search", params=params)
                     resp.raise_for_status()
-                    results = resp.json()
+                    raw_results = resp.json()
 
-                if not results:
-                    st.info("未找到匹配的专利结果，请尝试调整关键词或国家筛选")
+                if not raw_results:
+                    st.info("未找到匹配的专利结果，请尝试调整关键词或筛选条件")
+                    st.session_state["live_results"] = []
                     return
 
-                st.success(f"✅ 共找到 **{len(results)}** 条专利结果，已写入数据库")
-                st.markdown("<br>", unsafe_allow_html=True)
+                # 前端二次过滤：SerpApi country 参数已做一次筛选
+                # 此处再对 country_status 做确认，排除无该国记录的专利
+                if _ALL_OPTION not in selected_countries_zh and country_codes:
+                    results = [
+                        p
+                        for p in raw_results
+                        if any(
+                            c in (p.get("country_status") or {}) for c in country_codes
+                        )
+                    ]
+                else:
+                    results = raw_results
 
-                for idx, p in enumerate(results):
-                    _render_patent_card(p, idx)
+                # 存入 session_state，重置到第 0 页
+                st.session_state["live_results"] = results
+                st.session_state["live_results_total_fetched"] = len(raw_results)
+                st.session_state["live_page"] = 0
+                st.session_state["live_filter_tags"] = filter_tags
 
             except Exception as e:
                 st.error(f"❌ 搜索失败: {e}")
+                return
+
+    # ── 展示结果（session_state，支持翻页）─────────────────────
+    results = st.session_state.get("live_results", [])
+    if not results:
+        return
+
+    total_fetched = st.session_state.get("live_results_total_fetched", len(results))
+    filter_tags = st.session_state.get("live_filter_tags", [])
+
+    PAGE_SIZE = 10
+    total_pages = max(1, (len(results) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(st.session_state.get("live_page", 0), total_pages - 1))
+
+    # 统计栏
+    fetched_note = f"共获取 **{total_fetched}** 条"
+    if len(results) < total_fetched:
+        fetched_note += f"，国家过滤后剩余 **{len(results)}** 条"
+    st.success(f"✅ {fetched_note}，第 **{page + 1}/{total_pages}** 页")
+
+    # 翻页控件
+    nav_l, nav_mid, nav_r = st.columns([1, 4, 1])
+    with nav_l:
+        if st.button("◀ 上一页", disabled=(page == 0), key="live_prev"):
+            st.session_state["live_page"] = page - 1
+            st.rerun()
+    with nav_mid:
+        st.caption(
+            f"第 {page + 1} / {total_pages} 页 · 每页 {PAGE_SIZE} 条 · 共 {len(results)} 条"
+        )
+    with nav_r:
+        if st.button("下一页 ▶", disabled=(page >= total_pages - 1), key="live_next"):
+            st.session_state["live_page"] = page + 1
+            st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # 渲染当前页卡片
+    start_idx = page * PAGE_SIZE
+    for idx, p in enumerate(results[start_idx : start_idx + PAGE_SIZE]):
+        _render_patent_card(p, start_idx + idx)
 
 
 # ================================================================
