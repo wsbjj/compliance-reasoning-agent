@@ -5,9 +5,9 @@
 
 # 数据源配置（工厂模式：系统根据此处配置初始化对应的数据源）
 data_sources:
-  # 专利数据提供商: serpapi | uspto
+  # 专利数据提供商: serpapi | uspto (目前只适配了serpapi)
   patent_provider: "serpapi"
-  # 趋势数据提供商: pytrends | rainforest | keepa
+  # 趋势数据提供商: pytrends | rainforest | keepa (目前只适配了rainforest)
   trend_provider: "rainforest"
 
 # LLM 配置

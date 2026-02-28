@@ -64,7 +64,7 @@ async def patent_node(state: AgentState) -> AgentState:
 
 
 async def _save_patents_to_db(patents: list[dict], search_query: str) -> None:
-    """将专利数据批量写入数据库"""
+    """将专利数据批量写入数据库（完整字段）"""
     if not patents:
         return
 
@@ -79,10 +79,18 @@ async def _save_patents_to_db(patents: list[dict], search_query: str) -> None:
             patent_records = [
                 Patent(
                     title=p.get("title", "Unknown")[:500],
-                    assignee=p.get("assignee", "")[:300] if p.get("assignee") else None,
+                    assignee=(p.get("assignee") or "")[:300] or None,
                     abstract=p.get("abstract"),
-                    patent_id=p.get("patent_id", "")[:50] if p.get("patent_id") else None,
-                    filing_date=p.get("filing_date", "")[:30] if p.get("filing_date") else None,
+                    patent_id=(p.get("patent_id") or "")[:50] or None,
+                    publication_number=(p.get("publication_number") or "")[:100] or None,
+                    filing_date=(p.get("filing_date") or "")[:30] or None,
+                    priority_date=(p.get("priority_date") or "")[:30] or None,
+                    publication_date=(p.get("publication_date") or "")[:30] or None,
+                    inventor=(p.get("inventor") or "")[:500] or None,
+                    pdf_url=p.get("pdf_url") or None,
+                    thumbnail_url=p.get("thumbnail_url") or None,
+                    figures=p.get("figures") or [],
+                    country_status=p.get("country_status") or {},
                     search_query=search_query[:200],
                     source=p.get("source", "serpapi")[:20],
                     tech_points=p.get("tech_points"),
@@ -98,3 +106,4 @@ async def _save_patents_to_db(patents: list[dict], search_query: str) -> None:
     except Exception as e:
         # DB 写入失败不中断主流程
         logger.warning(f"[Node_Fetch_Patents → DB] Failed to save patents: {e}")
+

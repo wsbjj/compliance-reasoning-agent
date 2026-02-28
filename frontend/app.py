@@ -30,6 +30,10 @@ from sidebar import render_sidebar
 def main():
     api_base = render_sidebar()
 
+    # ---- 任务节流初始化 ----
+    if "is_running" not in st.session_state:
+        st.session_state["is_running"] = False
+
     # 页面标题
     page_title(
         "合规优化智能体看板",
@@ -53,11 +57,31 @@ def main():
             height=72,
         )
 
-    if st.button("开始合规分析", type="primary", use_container_width=True):
+    # ---- 任务节流：运行中禁止重复提交 ----
+    if st.session_state["is_running"]:
+        st.warning("⏳ 分析任务正在运行中，请耐心等待完成后再提交新任务…")
+
+    btn_clicked = st.button(
+        "开始合规分析",
+        type="primary",
+        use_container_width=True,
+        disabled=st.session_state["is_running"],
+    )
+
+    if btn_clicked:
         if not query:
             st.warning("请先输入产品关键词")
-            return
+        else:
+            # 缓存待运行的 query，置为运行中后强制刷新
+            st.session_state["is_running"] = True
+            st.session_state["pending_query"] = query
+            st.session_state["pending_context"] = extra_context
+            st.rerun()
 
+    # ---- 实际执行分析（is_running=True 时在下一轮 render 中触发）----
+    if st.session_state["is_running"] and "pending_query" in st.session_state:
+        pending_q = st.session_state.pop("pending_query")
+        pending_ctx = st.session_state.pop("pending_context", "")
         with st.spinner("🤖 智能体正在规划任务、搜索专利、分析趋势，请稍候..."):
             try:
                 import httpx
@@ -65,8 +89,8 @@ def main():
                     resp = client.post(
                         f"{api_base}/api/analysis/run",
                         json={
-                            "query": query,
-                            "extra_context": extra_context,
+                            "query": pending_q,
+                            "extra_context": pending_ctx,
                             "user_id": "streamlit_user",
                         },
                     )
@@ -78,7 +102,10 @@ def main():
 
             except Exception as e:
                 st.error(f"❌ 分析失败: {e}")
-                return
+            finally:
+                # 无论成功失败，解除节流锁
+                st.session_state["is_running"] = False
+
 
     # ---- 结果展示 ----
     if "latest_result" in st.session_state:

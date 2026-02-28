@@ -141,6 +141,15 @@ class MemoryService:
 
         # ── 通道 A: 本地 Ollama + Qdrant ──────────────────────────────
         if provider == "ollama":
+            # 先检测 ollama Python 包是否已安装
+            import importlib.util
+            if importlib.util.find_spec("ollama") is None:
+                self._log_ollama_unavailable(
+                    "❌ 'ollama' Python 包未安装",
+                    fix="请执行: uv add ollama",
+                )
+                self._active_channel = "fallback"
+                return FallbackMemory()
             try:
                 instance = _build_ollama_mem0(mem_cfg)
                 self._active_channel = "ollama"
@@ -152,9 +161,10 @@ class MemoryService:
                 )
                 return instance
             except Exception as e:
-                logger.warning(f"Mem0 本地通道初始化失败: {e}，降级为 FallbackMemory")
+                self._diagnose_ollama_error(e, mem_cfg)
                 self._active_channel = "fallback"
                 return FallbackMemory()
+
 
         # ── 通道 B: Mem0 Platform 云端 API ───────────────────────────
         elif provider == "mem0_api":
@@ -183,6 +193,60 @@ class MemoryService:
             )
             self._active_channel = "fallback"
             return FallbackMemory()
+
+    # ------------------------------------------------------------------
+    # Ollama 通道诊断工具方法
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _log_ollama_unavailable(reason: str, fix: str) -> None:
+        """输出结构化的 Ollama 不可用告警，并提示修复方法。"""
+        logger.warning(
+            "\n"
+            "╔══════════════════════════════════════════════════════════╗\n"
+            "║        ⚠️  Mem0 本地通道 (Ollama) 不可用                 ║\n"
+            "╠══════════════════════════════════════════════════════════╣\n"
+            f"║  原因: {reason:<52}║\n"
+            f"║  修复: {fix:<52}║\n"
+            "╠══════════════════════════════════════════════════════════╣\n"
+            "║  系统已自动降级为内存字典 (FallbackMemory)               ║\n"
+            "║  本次会话记忆在程序重启后将不会保留                      ║\n"
+            "╚══════════════════════════════════════════════════════════╝"
+        )
+
+    def _diagnose_ollama_error(self, e: Exception, mem_cfg) -> None:
+        """根据异常内容诊断 Ollama/Qdrant 失败的具体原因，输出可操作的修复建议。"""
+        err_str = str(e).lower()
+
+        # 1. Qdrant 连接被拒绝
+        if "connection refused" in err_str and str(mem_cfg.qdrant_port) in err_str:
+            self._log_ollama_unavailable(
+                f"❌ Qdrant 服务未运行 ({mem_cfg.qdrant_host}:{mem_cfg.qdrant_port})",
+                fix="请启动 Qdrant: docker run -p 6333:6333 qdrant/qdrant",
+            )
+        # 2. Ollama 服务未运行（API 连接失败）
+        elif ("connection refused" in err_str or "connection error" in err_str) and "11434" in err_str:
+            self._log_ollama_unavailable(
+                "❌ Ollama 服务未运行 (localhost:11434)",
+                fix="请启动 Ollama: ollama serve",
+            )
+        # 3. 模型未拉取（404 或 model not found）
+        elif "404" in err_str or "model not found" in err_str or "pull" in err_str:
+            self._log_ollama_unavailable(
+                f"❌ 模型未下载: {mem_cfg.ollama_llm_model} / {mem_cfg.ollama_embed_model}",
+                fix=f"请执行: ollama pull {mem_cfg.ollama_embed_model}",
+            )
+        # 4. 通用连接超时
+        elif "timeout" in err_str or "timed out" in err_str:
+            self._log_ollama_unavailable(
+                "❌ 连接超时，Ollama/Qdrant 服务响应缓慢或不可达",
+                fix="请检查 Ollama 和 Qdrant 服务是否正常运行",
+            )
+        # 5. 其他未知错误
+        else:
+            self._log_ollama_unavailable(
+                f"❌ 初始化失败: {str(e)[:45]}",
+                fix="请检查 Ollama 和 Qdrant 服务状态及配置",
+            )
 
     @property
     def active_channel(self) -> str:
