@@ -43,6 +43,13 @@ COUNTRY_OPTIONS = {
 _ALL_OPTION = "🌍 全部（不过滤）"
 LIVE_COUNTRY_OPTIONS = {_ALL_OPTION: None, **COUNTRY_OPTIONS}
 
+# 专利有效性筛选选项映射
+_VALIDITY_OPTIONS = {
+    "不筛选": None,
+    "✅ ACTIVE（有效）": "ACTIVE",
+    "❌ NOT_ACTIVE（无效）": "NOT_ACTIVE",
+}
+
 
 def _country_status_badge(status_dict: dict) -> str:
     """从 country_status 中生成状态徽章文字"""
@@ -163,7 +170,7 @@ def render_db_patent_matrix():
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ---- 筛选器 ----
-    col1, col2 = st.columns([2, 2])
+    col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
         query_options = ["全部"] + stats.get("queries", [])
         selected_query = st.selectbox(
@@ -175,6 +182,13 @@ def render_db_patent_matrix():
             placeholder="输入公司/申请人名称...",
             key="db_assignee_filter",
         )
+    with col3:
+        validity_label = st.selectbox(
+            "专利有效性",
+            options=list(_VALIDITY_OPTIONS.keys()),
+            key="db_validity_filter",
+            help="ACTIVE=至少一个国家有效；NOT_ACTIVE=至少一个国家无效",
+        )
 
     st.button("🔍 搜索", type="primary", key="db_search_btn")
 
@@ -184,6 +198,9 @@ def render_db_patent_matrix():
         params["query"] = selected_query
     if filter_assignee:
         params["assignee"] = filter_assignee
+    validity_value = _VALIDITY_OPTIONS[validity_label]
+    if validity_value:
+        params["validity"] = validity_value
 
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -261,12 +278,24 @@ def render_live_search():
             key="live_countries",
         )
 
-    # ── 操作行：搜索按钮 + 获取条数 ──────────────────────────────
-    col_btn, col_spacer, col_num = st.columns([2, 1, 1])
+    # ── 操作行：搜索按钮 + 有效性筛选 + 获取条数 ──────────────────
+    col_btn, col_validity, col_title_only, col_num = st.columns([2, 1, 1, 1])
     with col_btn:
         search_btn = st.button("🌐 搜索专利", type="primary", key="live_search_btn")
-    with col_spacer:
-        st.write("")
+    with col_validity:
+        live_validity_label = st.selectbox(
+            "专利有效性",
+            options=list(_VALIDITY_OPTIONS.keys()),
+            key="live_validity",
+            help="基于 country_status 字段后过滤：ACTIVE=至少一个国家有效；NOT_ACTIVE=至少一个国家无效（SerpApi 不支持该参数，结果获取后本地过滤）",
+        )
+    with col_title_only:
+        title_only = st.checkbox(
+            "只匹配标题",
+            value=True,
+            key="live_title_only",
+            help="勾选后仅保留标题中包含关键词的专利结果",
+        )
     with col_num:
         max_results = st.selectbox(
             "获取条数",
@@ -361,6 +390,13 @@ def render_live_search():
         if before_param:
             filter_tags.append(f"before: {before_param}")
 
+        # 专利有效性筛选值
+        live_validity_value = _VALIDITY_OPTIONS[live_validity_label]
+        if live_validity_value:
+            filter_tags.append(f"有效性: {live_validity_value}")
+        if title_only:
+            filter_tags.append("只匹配标题")
+
         st.caption(
             f"🔎 搜索词：`{live_query}`"
             + (f"　　筛选：{' | '.join(filter_tags)}" if filter_tags else "")
@@ -409,6 +445,36 @@ def render_live_search():
                 else:
                     results = raw_results
 
+                # 专利有效性后过滤（SerpApi 不支持该参数，本地过滤）
+                if live_validity_value:
+                    results = [
+                        p
+                        for p in results
+                        if live_validity_value
+                        in (p.get("country_status") or {}).values()
+                    ]
+
+                # 只匹配标题：仅保留标题中包含搜索关键词的结果
+                if title_only and live_query:
+                    # 提取核心关键词（去除布尔运算符和括号）
+                    import re
+
+                    raw_kw = re.sub(r"\b(OR|AND|NOT)\b", " ", live_query)
+                    raw_kw = re.sub(r"[()\"']", " ", raw_kw)
+                    keywords = [
+                        kw.strip().lower()
+                        for kw in raw_kw.split()
+                        if kw.strip() and len(kw.strip()) > 1
+                    ]
+                    if keywords:
+                        results = [
+                            p
+                            for p in results
+                            if any(
+                                kw in (p.get("title") or "").lower() for kw in keywords
+                            )
+                        ]
+
                 # 存入 session_state，重置到第 0 页
                 st.session_state["live_results"] = results
                 st.session_state["live_results_total_fetched"] = len(raw_results)
@@ -434,7 +500,7 @@ def render_live_search():
     # 统计栏
     fetched_note = f"共获取 **{total_fetched}** 条"
     if len(results) < total_fetched:
-        fetched_note += f"，国家过滤后剩余 **{len(results)}** 条"
+        fetched_note += f"，过滤后剩余 **{len(results)}** 条"
     st.success(f"✅ {fetched_note}，第 **{page + 1}/{total_pages}** 页")
 
     # 翻页控件

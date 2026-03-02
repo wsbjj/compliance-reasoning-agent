@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from typing import Sequence
 
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.patent import Patent
@@ -62,9 +62,14 @@ class PatentRepository:
         query: str | None = None,
         assignee: str | None = None,
         category: str | None = None,
+        validity: str | None = None,
         limit: int = 50,
     ) -> Sequence[Patent]:
-        """多条件搜索（limit=0 表示不限制条数，返回全部）"""
+        """多条件搜索（limit=0 表示不限制条数，返回全部）
+
+        validity: "ACTIVE" / "NOT_ACTIVE" / None（不筛选）
+            基于 country_status JSONB 字段，检查是否有任一国家状态匹配
+        """
         stmt = select(Patent)
         if query:
             stmt = stmt.where(Patent.search_query == query)
@@ -72,6 +77,14 @@ class PatentRepository:
             stmt = stmt.where(Patent.assignee.ilike(f"%{assignee}%"))
         if category:
             stmt = stmt.where(Patent.category == category)
+        if validity in ("ACTIVE", "NOT_ACTIVE"):
+            # 使用 PostgreSQL jsonb_each_text 检查是否有任一国家状态匹配
+            stmt = stmt.where(
+                text(
+                    "EXISTS (SELECT 1 FROM jsonb_each_text(patents.country_status) AS x "
+                    f"WHERE x.value = '{validity}')"
+                )
+            )
         stmt = stmt.order_by(Patent.created_at.desc())
         if limit > 0:
             stmt = stmt.limit(limit)

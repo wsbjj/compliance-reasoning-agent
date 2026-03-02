@@ -75,15 +75,20 @@ class PatentStatsResponse(BaseModel):
 async def list_patents(
     query: str | None = None,
     assignee: str | None = None,
+    validity: str | None = None,
     limit: int = 0,
     session: AsyncSession = Depends(get_db_session),
 ):
     """
     获取专利列表（用于专利矩阵看板）
-    支持按搜索关键词、申请人筛选
+    支持按搜索关键词、申请人、专利有效性筛选
+
+    - validity: ACTIVE / NOT_ACTIVE / None（不筛选）
     """
     repo = PatentRepository(session)
-    patents = await repo.search(query=query, assignee=assignee, limit=limit)
+    patents = await repo.search(
+        query=query, assignee=assignee, validity=validity, limit=limit
+    )
 
     result = []
     for p in patents:
